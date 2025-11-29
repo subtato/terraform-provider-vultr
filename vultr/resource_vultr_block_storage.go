@@ -382,21 +382,36 @@ func resourceVultrBlockStorageDelete(ctx context.Context, d *schema.ResourceData
 	// Check if block storage is attached and detach if necessary
 	bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 	if err != nil {
-		// If we can't get it, it might already be deleted, try to delete anyway
-		if strings.Contains(err.Error(), "Invalid block storage ID") {
+		errStr := err.Error()
+		// "Nothing to change" means the state is already correct - proceed with deletion
+		if isNothingToChangeError(err) {
+			log.Printf("[INFO] Block storage %s returned 'Nothing to change' - proceeding with deletion", d.Id())
+			// Continue to deletion - "Nothing to change" means it's in the desired state
+		} else if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
+			// If we can't get it, it might already be deleted, try to delete anyway
 			log.Printf("[INFO] Block storage %s appears to already be deleted", d.Id())
 			return nil
+		} else {
+			return diag.Errorf("error getting block storage %s during deletion: %v", d.Id(), err)
 		}
-		return diag.Errorf("error getting block storage %s during deletion: %v", d.Id(), err)
+		// Set bs to nil if we got "Nothing to change" so we skip the detachment check
+		if isNothingToChangeError(err) {
+			bs = nil
+		}
 	}
 
 	// Detach if attached
-	if bs.AttachedToInstance != "" {
+	if bs != nil && bs.AttachedToInstance != "" {
 		log.Printf("[INFO] Detaching block storage %s from instance %s before deletion", d.Id(), bs.AttachedToInstance)
 		blockReq := &govultr.BlockStorageDetach{Live: govultr.BoolToBoolPtr(d.Get("live").(bool))}
 		if err := client.BlockStorage.Detach(ctx, d.Id(), blockReq); err != nil {
-			// If detach fails, still try to delete (might already be detached)
-			log.Printf("[WARN] Error detaching block storage %s (will attempt deletion anyway): %v", d.Id(), err)
+			// "Nothing to change" means it's already detached - not an error
+			if isNothingToChangeError(err) {
+				log.Printf("[INFO] Block storage %s already detached (Nothing to change response)", d.Id())
+			} else {
+				// If detach fails for other reasons, still try to delete (might already be detached)
+				log.Printf("[WARN] Error detaching block storage %s (will attempt deletion anyway): %v", d.Id(), err)
+			}
 		} else {
 			// Wait for detachment to complete
 			if err := waitForBlockStorageDetachment(ctx, client, d.Id(), 30*time.Second); err != nil {
