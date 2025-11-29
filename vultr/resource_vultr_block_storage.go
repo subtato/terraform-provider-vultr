@@ -153,30 +153,24 @@ func resourceVultrBlockStorageCreate(ctx context.Context, d *schema.ResourceData
 	return resourceVultrBlockStorageRead(ctx, d, meta)
 }
 
-// isNothingToChangeError checks if an error is the "Nothing to change" API error
+// isNothingToChangeError checks if the response indicates "Nothing to change"
+// This is not actually an error - it means the state is already correct
+// The API returns: {"error":"Nothing to change","status":400}
 func isNothingToChangeError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errStr := err.Error()
-	// Check for various formats of the "Nothing to change" error
-	// The API returns: {"error":"Nothing to change","status":400}
-	// The SDK may wrap this in various ways, so we check multiple patterns
 	errLower := strings.ToLower(errStr)
 
-	// Check for the error message in various formats
-	hasError := strings.Contains(errStr, "Nothing to change") ||
+	// Check for various formats of the "Nothing to change" response
+	// The API may return this in different formats, so we check multiple patterns
+	return strings.Contains(errStr, "Nothing to change") ||
 		strings.Contains(errStr, `"error":"Nothing to change"`) ||
 		strings.Contains(errStr, `error":"Nothing to change`) ||
 		strings.Contains(errStr, `{"error":"Nothing to change"`) ||
-		strings.Contains(errLower, "nothing to change")
-
-	// Also check if the entire error string matches the JSON format
-	if !hasError && (strings.Contains(errStr, `{"error"`) && strings.Contains(errLower, "nothing to change")) {
-		hasError = true
-	}
-
-	return hasError
+		strings.Contains(errLower, "nothing to change") ||
+		(strings.Contains(errStr, `{"error"`) && strings.Contains(errLower, "nothing to change"))
 }
 
 func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -185,45 +179,28 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 	bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 	if err != nil {
 		errStr := err.Error()
-
-		// Handle "Nothing to change" error - check using both helper function and simple string check
-		// This error can occur transiently after detachment operations
+		
+		// "Nothing to change" is not an error - it means the state is already correct
+		// This commonly occurs after detachment operations when the API is confirming no changes needed
 		isNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
-
+		
 		if isNothingToChange {
-			log.Printf("[WARN] Detected 'Nothing to change' error when reading block storage %s (error: %s), retrying after brief delay", d.Id(), errStr)
-			// Retry once after a brief delay
-			time.Sleep(2 * time.Second)
-			bs, _, err = client.BlockStorage.Get(ctx, d.Id())
-			if err != nil {
-				errStr = err.Error()
-				// If it still fails, check if it's a "not found" type error
-				if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
-					tflog.Warn(ctx, fmt.Sprintf("Removing block storage (%s) because it is gone", d.Id()))
-					d.SetId("")
-					return nil
-				}
-				// Check if still "Nothing to change" after retry
-				isStillNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
-				if isStillNothingToChange {
-					log.Printf("[WARN] Block storage %s still returning 'Nothing to change' after retry, assuming state is correct", d.Id())
-					// Don't update state, just return - the state is already correct
-					// This can happen when the API is in a transitional state after detachment
-					return nil
-				}
-				// For other errors after retry, return them
-				return diag.Errorf("error getting block storage: %v", err)
-			}
-			// If retry succeeded, continue with normal flow below to set state
-		} else if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
+			log.Printf("[INFO] Block storage %s returned 'Nothing to change' - state is already correct, no update needed", d.Id())
+			// This is not an error - the state is already in the desired condition
+			// Return successfully without updating state, as it's already correct
+			return nil
+		}
+		
+		// Handle actual errors
+		if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
 			tflog.Warn(ctx, fmt.Sprintf("Removing block storage (%s) because it is gone", d.Id()))
 			d.SetId("")
 			return nil
-		} else {
-			// Log the actual error for debugging
-			log.Printf("[DEBUG] Block storage read error: %s", errStr)
-			return diag.Errorf("error getting block storage: %v", err)
 		}
+		
+		// For other actual errors, return them
+		log.Printf("[DEBUG] Block storage read error: %s", errStr)
+		return diag.Errorf("error getting block storage: %v", err)
 	}
 
 	// Note: 'live' is a configuration option, not returned by the API
@@ -311,28 +288,24 @@ func resourceVultrBlockStorageUpdate(ctx context.Context, d *schema.ResourceData
 			// destroyed.
 			bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 			if err != nil {
-				// Handle "Nothing to change" error gracefully
+				// "Nothing to change" means the state is already correct
 				if isNothingToChangeError(err) {
-					log.Printf("[WARN] Received 'Nothing to change' error when checking block storage %s, assuming current state", d.Id())
-					// Try to continue - if it's already detached, that's fine
+					log.Printf("[INFO] Block storage %s returned 'Nothing to change' - state is already correct", d.Id())
+					// If we're removing attachment, "Nothing to change" likely means it's already detached
 					if newInstanceID == "" {
-						// We're just removing attachment, so if we can't read it, assume it's already detached
-						log.Printf("[INFO] Proceeding with detachment removal - assuming already detached")
-						// Set bs to nil to skip the attachment check below
-						bs = nil
+						log.Printf("[INFO] Assuming block storage is already detached (Nothing to change response)")
+						bs = nil // Set to nil to skip attachment check below
 					} else {
-						// We need to attach to a new instance, so we need to know current state
-						// Retry after a delay
-						time.Sleep(2 * time.Second)
+						// If we're attaching to a new instance, "Nothing to change" might mean it's already in the desired state
+						// Try to get the state one more time, but if it still says "Nothing to change", proceed
+						log.Printf("[INFO] Retrying to get block storage state for attachment operation")
+						time.Sleep(1 * time.Second)
 						bs, _, err = client.BlockStorage.Get(ctx, d.Id())
-						if err != nil {
-							// If still getting "Nothing to change", assume it's detached and proceed with attach
-							if isNothingToChangeError(err) {
-								log.Printf("[WARN] Still getting 'Nothing to change', assuming detached and proceeding with attach")
-								bs = nil
-							} else {
-								return diag.Errorf("error getting block storage after retry: %v", err)
-							}
+						if err != nil && isNothingToChangeError(err) {
+							log.Printf("[INFO] Still getting 'Nothing to change', assuming current state is acceptable")
+							bs = nil
+						} else if err != nil {
+							return diag.Errorf("error getting block storage after retry: %v", err)
 						}
 					}
 				} else {
@@ -348,10 +321,12 @@ func resourceVultrBlockStorageUpdate(ctx context.Context, d *schema.ResourceData
 				err := client.BlockStorage.Detach(ctx, d.Id(), blockReq)
 				if err != nil {
 					errStr := err.Error()
-					// If we're just removing the attachment (newInstanceID is empty),
-					// and detach fails, it might already be detached - continue
-					if newInstanceID == "" && (strings.Contains(errStr, "not attached") || isNothingToChangeError(err)) {
-						log.Printf("[WARN] Block storage %s may already be detached, continuing: %v", d.Id(), err)
+					// "Nothing to change" means it's already detached - not an error
+					if isNothingToChangeError(err) {
+						log.Printf("[INFO] Block storage %s already detached (Nothing to change response)", d.Id())
+					} else if newInstanceID == "" && strings.Contains(errStr, "not attached") {
+						// Already detached - not an error when removing attachment
+						log.Printf("[INFO] Block storage %s already detached", d.Id())
 					} else {
 						return diag.Errorf("error detaching block storage %s from instance %s: %v", d.Id(), oldInstanceID, err)
 					}
@@ -493,6 +468,11 @@ func waitForBlockStorageAttachment(ctx context.Context, client *govultr.Client, 
 		case <-ticker.C:
 			bState, _, err := client.BlockStorage.Get(ctx, blockID)
 			if err != nil {
+				// "Nothing to change" means the state is already correct (attached in this case)
+				if isNothingToChangeError(err) {
+					log.Printf("[INFO] Block storage %s returned 'Nothing to change' - assuming already attached", blockID)
+					return nil
+				}
 				return fmt.Errorf("error checking attachment status: %w", err)
 			}
 			if bState.AttachedToInstance == instanceID && bState.MountID != "" {
