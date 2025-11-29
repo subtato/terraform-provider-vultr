@@ -180,11 +180,22 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 	if err != nil {
 		errStr := err.Error()
 
+		// Log the error for debugging
+		tflog.Debug(ctx, fmt.Sprintf("Block storage read error for %s: %s", d.Id(), errStr))
+
 		// "Nothing to change" is not an error - it means the state is already correct
 		// This commonly occurs after detachment operations when the API is confirming no changes needed
-		isNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
+		// Check using helper function and also do a direct string check as fallback
+		isNothingToChange := isNothingToChangeError(err)
+		if !isNothingToChange {
+			// Fallback: check if error string contains both "Nothing" and "change" (case-insensitive)
+			errLower := strings.ToLower(errStr)
+			isNothingToChange = (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change")) ||
+				(strings.Contains(errLower, "nothing") && strings.Contains(errLower, "change"))
+		}
 
 		if isNothingToChange {
+			tflog.Info(ctx, fmt.Sprintf("Block storage %s returned 'Nothing to change' - state is already correct, no update needed", d.Id()))
 			log.Printf("[INFO] Block storage %s returned 'Nothing to change' - state is already correct, no update needed", d.Id())
 			// This is not an error - the state is already in the desired condition
 			// Return successfully without updating state, as it's already correct
