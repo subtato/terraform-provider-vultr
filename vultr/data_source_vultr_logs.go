@@ -44,4 +44,3 @@ func dataSourceVultrLogsRead(ctx context.Context, d *schema.ResourceData, meta i
 
 	return diag.Errorf("Log service is not yet implemented in the govultr SDK. Please check the SDK documentation for updates.")
 }
-

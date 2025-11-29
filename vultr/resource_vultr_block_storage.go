@@ -388,7 +388,7 @@ func newBlockStateRefresh(ctx context.Context, d *schema.ResourceData, meta inte
 // waitForBlockStorageAttachment waits for a block storage to be attached to an instance
 func waitForBlockStorageAttachment(ctx context.Context, client *govultr.Client, blockID, instanceID string, timeout time.Duration) error {
 	log.Printf("[INFO] Waiting for block storage %s to attach to instance %s", blockID, instanceID)
-	
+
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -415,7 +415,7 @@ func waitForBlockStorageAttachment(ctx context.Context, client *govultr.Client, 
 // waitForBlockStorageDetachment waits for a block storage to be detached from an instance
 func waitForBlockStorageDetachment(ctx context.Context, client *govultr.Client, blockID string, timeout time.Duration) error {
 	log.Printf("[INFO] Waiting for block storage %s to detach", blockID)
-	
+
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()

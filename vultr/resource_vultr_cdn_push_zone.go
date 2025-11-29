@@ -112,4 +112,3 @@ func resourceVultrCDNPushZoneDelete(ctx context.Context, d *schema.ResourceData,
 
 	return nil
 }
-

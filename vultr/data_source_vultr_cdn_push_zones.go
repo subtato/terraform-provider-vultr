@@ -53,23 +53,23 @@ func dataSourceVultrCDNPushZonesRead(ctx context.Context, d *schema.ResourceData
 	}
 
 	for _, zone := range pushZones {
-			sm, err := structToMap(zone)
-			if err != nil {
-				return diag.FromErr(err)
-			}
-
-			// If filters exist, check if this zone matches
-			if filtersOk && !filterLoop(f, sm) {
-				continue
-			}
-
-			pushZoneList = append(pushZoneList, map[string]interface{}{
-				"id":          zone.ID,
-				"label":       zone.Label,
-				"cdn_domain":  zone.CDNURL,
-				"date_created": zone.DateCreated,
-			})
+		sm, err := structToMap(zone)
+		if err != nil {
+			return diag.FromErr(err)
 		}
+
+		// If filters exist, check if this zone matches
+		if filtersOk && !filterLoop(f, sm) {
+			continue
+		}
+
+		pushZoneList = append(pushZoneList, map[string]interface{}{
+			"id":           zone.ID,
+			"label":        zone.Label,
+			"cdn_domain":   zone.CDNURL,
+			"date_created": zone.DateCreated,
+		})
+	}
 
 	d.SetId("cdn_push_zones")
 	if err := d.Set("cdn_push_zones", pushZoneList); err != nil {
@@ -78,4 +78,3 @@ func dataSourceVultrCDNPushZonesRead(ctx context.Context, d *schema.ResourceData
 
 	return nil
 }
-

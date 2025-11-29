@@ -100,4 +100,3 @@ func dataSourceVultrBillingHistoryRead(ctx context.Context, d *schema.ResourceDa
 
 	return nil
 }
-

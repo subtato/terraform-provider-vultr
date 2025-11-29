@@ -43,4 +43,3 @@ func dataSourceVultrPendingChargesRead(ctx context.Context, d *schema.ResourceDa
 
 	return nil
 }
-

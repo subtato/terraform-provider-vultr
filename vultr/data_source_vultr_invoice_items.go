@@ -116,4 +116,3 @@ func dataSourceVultrInvoiceItemsRead(ctx context.Context, d *schema.ResourceData
 
 	return nil
 }
-
