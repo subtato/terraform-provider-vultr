@@ -316,8 +316,21 @@ func resourceVultrBlockStorageUpdate(ctx context.Context, d *schema.ResourceData
 			// destroyed.
 			bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 			if err != nil {
+				errStr := err.Error()
+				tflog.Debug(ctx, fmt.Sprintf("Block storage get error during update for %s: %s", d.Id(), errStr))
+
 				// "Nothing to change" means the state is already correct
-				if isNothingToChangeError(err) {
+				// Check using helper function and also do a direct string check as fallback
+				isNothingToChange := isNothingToChangeError(err)
+				if !isNothingToChange {
+					// Fallback: check if error string contains both "Nothing" and "change" (case-insensitive)
+					errLower := strings.ToLower(errStr)
+					isNothingToChange = (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change")) ||
+						(strings.Contains(errLower, "nothing") && strings.Contains(errLower, "change"))
+				}
+
+				if isNothingToChange {
+					tflog.Info(ctx, fmt.Sprintf("Block storage %s returned 'Nothing to change' - state is already correct", d.Id()))
 					log.Printf("[INFO] Block storage %s returned 'Nothing to change' - state is already correct", d.Id())
 					// If we're removing attachment, "Nothing to change" likely means it's already detached
 					if newInstanceID == "" {
@@ -329,14 +342,25 @@ func resourceVultrBlockStorageUpdate(ctx context.Context, d *schema.ResourceData
 						log.Printf("[INFO] Retrying to get block storage state for attachment operation")
 						time.Sleep(1 * time.Second)
 						bs, _, err = client.BlockStorage.Get(ctx, d.Id())
-						if err != nil && isNothingToChangeError(err) {
-							log.Printf("[INFO] Still getting 'Nothing to change', assuming current state is acceptable")
-							bs = nil
-						} else if err != nil {
-							return diag.Errorf("error getting block storage after retry: %v", err)
+						if err != nil {
+							errStr = err.Error()
+							isStillNothingToChange := isNothingToChangeError(err)
+							if !isStillNothingToChange {
+								errLower := strings.ToLower(errStr)
+								isStillNothingToChange = (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change")) ||
+									(strings.Contains(errLower, "nothing") && strings.Contains(errLower, "change"))
+							}
+							if isStillNothingToChange {
+								log.Printf("[INFO] Still getting 'Nothing to change', assuming current state is acceptable")
+								bs = nil
+							} else {
+								return diag.Errorf("error getting block storage after retry: %v", err)
+							}
 						}
 					}
 				} else {
+					// For actual errors, return them
+					log.Printf("[DEBUG] Block storage get error (not 'Nothing to change'): %s", errStr)
 					return diag.Errorf("error getting block storage: %v", err)
 				}
 			}
