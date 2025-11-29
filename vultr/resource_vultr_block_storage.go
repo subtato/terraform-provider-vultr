@@ -185,10 +185,14 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 	bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 	if err != nil {
 		errStr := err.Error()
-		// Handle "Nothing to change" error - this can occur transiently after detachment
-		// The block storage still exists, just retry after a short delay
-		if isNothingToChangeError(err) {
-			log.Printf("[WARN] Received 'Nothing to change' error when reading block storage %s (error: %s), retrying after brief delay", d.Id(), errStr)
+
+		// Handle "Nothing to change" error - check using both helper function and simple string check
+		// This error can occur transiently after detachment operations
+		isNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
+
+		if isNothingToChange {
+			log.Printf("[WARN] Detected 'Nothing to change' error when reading block storage %s (error: %s), retrying after brief delay", d.Id(), errStr)
+			// Retry once after a brief delay
 			time.Sleep(2 * time.Second)
 			bs, _, err = client.BlockStorage.Get(ctx, d.Id())
 			if err != nil {
@@ -199,27 +203,25 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 					d.SetId("")
 					return nil
 				}
-				// For "Nothing to change" on retry, treat as non-fatal and use current state
-				if isNothingToChangeError(err) {
-					log.Printf("[WARN] Block storage %s still returning 'Nothing to change' after retry (error: %s), assuming state is correct", d.Id(), errStr)
+				// Check if still "Nothing to change" after retry
+				isStillNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
+				if isStillNothingToChange {
+					log.Printf("[WARN] Block storage %s still returning 'Nothing to change' after retry, assuming state is correct", d.Id())
 					// Don't update state, just return - the state is already correct
 					// This can happen when the API is in a transitional state after detachment
 					return nil
 				}
+				// For other errors after retry, return them
 				return diag.Errorf("error getting block storage: %v", err)
 			}
+			// If retry succeeded, continue with normal flow below to set state
 		} else if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
 			tflog.Warn(ctx, fmt.Sprintf("Removing block storage (%s) because it is gone", d.Id()))
 			d.SetId("")
 			return nil
 		} else {
-			// Log the actual error for debugging - this helps identify if the error format changed
-			log.Printf("[DEBUG] Block storage read error (not caught by 'Nothing to change' check): %s", errStr)
-			// Double-check if it might be a "Nothing to change" error we missed
-			if strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change") {
-				log.Printf("[WARN] Error appears to be 'Nothing to change' but wasn't caught, treating as non-fatal")
-				return nil
-			}
+			// Log the actual error for debugging
+			log.Printf("[DEBUG] Block storage read error: %s", errStr)
 			return diag.Errorf("error getting block storage: %v", err)
 		}
 	}
