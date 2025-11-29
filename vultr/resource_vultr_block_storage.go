@@ -156,6 +156,7 @@ func resourceVultrBlockStorageCreate(ctx context.Context, d *schema.ResourceData
 // isNothingToChangeError checks if the response indicates "Nothing to change"
 // This is not actually an error - it means the state is already correct
 // The API returns: {"error":"Nothing to change","status":400}
+// The SDK may wrap this error, so we check the error string thoroughly
 func isNothingToChangeError(err error) bool {
 	if err == nil {
 		return false
@@ -165,12 +166,28 @@ func isNothingToChangeError(err error) bool {
 
 	// Check for various formats of the "Nothing to change" response
 	// The API may return this in different formats, so we check multiple patterns
-	return strings.Contains(errStr, "Nothing to change") ||
+	// This is the most common format: {"error":"Nothing to change","status":400}
+	if strings.Contains(errStr, "Nothing to change") ||
 		strings.Contains(errStr, `"error":"Nothing to change"`) ||
 		strings.Contains(errStr, `error":"Nothing to change`) ||
 		strings.Contains(errStr, `{"error":"Nothing to change"`) ||
-		strings.Contains(errLower, "nothing to change") ||
-		(strings.Contains(errStr, `{"error"`) && strings.Contains(errLower, "nothing to change"))
+		strings.Contains(errLower, "nothing to change") {
+		return true
+	}
+
+	// Also check if it contains both "error" JSON key and "nothing to change" text
+	if strings.Contains(errStr, `{"error"`) && strings.Contains(errLower, "nothing to change") {
+		return true
+	}
+
+	// Final fallback: check if error string contains both "Nothing" and "change" (case-insensitive)
+	// This catches any variation of the message
+	if (strings.Contains(errStr, "Nothing") || strings.Contains(errLower, "nothing")) &&
+		(strings.Contains(errStr, "change") || strings.Contains(errLower, "change")) {
+		return true
+	}
+
+	return false
 }
 
 func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
