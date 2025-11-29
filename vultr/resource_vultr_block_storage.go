@@ -179,25 +179,25 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 	bs, _, err := client.BlockStorage.Get(ctx, d.Id())
 	if err != nil {
 		errStr := err.Error()
-		
+
 		// "Nothing to change" is not an error - it means the state is already correct
 		// This commonly occurs after detachment operations when the API is confirming no changes needed
 		isNothingToChange := isNothingToChangeError(err) || (strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change"))
-		
+
 		if isNothingToChange {
 			log.Printf("[INFO] Block storage %s returned 'Nothing to change' - state is already correct, no update needed", d.Id())
 			// This is not an error - the state is already in the desired condition
 			// Return successfully without updating state, as it's already correct
 			return nil
 		}
-		
+
 		// Handle actual errors
 		if strings.Contains(errStr, "Invalid block storage ID") || strings.Contains(errStr, "not found") {
 			tflog.Warn(ctx, fmt.Sprintf("Removing block storage (%s) because it is gone", d.Id()))
 			d.SetId("")
 			return nil
 		}
-		
+
 		// For other actual errors, return them
 		log.Printf("[DEBUG] Block storage read error: %s", errStr)
 		return diag.Errorf("error getting block storage: %v", err)
