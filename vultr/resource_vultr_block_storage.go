@@ -160,10 +160,23 @@ func isNothingToChangeError(err error) bool {
 	}
 	errStr := err.Error()
 	// Check for various formats of the "Nothing to change" error
-	return strings.Contains(errStr, "Nothing to change") ||
+	// The API returns: {"error":"Nothing to change","status":400}
+	// The SDK may wrap this in various ways, so we check multiple patterns
+	errLower := strings.ToLower(errStr)
+
+	// Check for the error message in various formats
+	hasError := strings.Contains(errStr, "Nothing to change") ||
 		strings.Contains(errStr, `"error":"Nothing to change"`) ||
-		strings.Contains(errStr, `"error":"Nothing to change"`) ||
-		strings.Contains(errStr, `error":"Nothing to change`)
+		strings.Contains(errStr, `error":"Nothing to change`) ||
+		strings.Contains(errStr, `{"error":"Nothing to change"`) ||
+		strings.Contains(errLower, "nothing to change")
+
+	// Also check if the entire error string matches the JSON format
+	if !hasError && (strings.Contains(errStr, `{"error"`) && strings.Contains(errLower, "nothing to change")) {
+		hasError = true
+	}
+
+	return hasError
 }
 
 func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
@@ -175,7 +188,7 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 		// Handle "Nothing to change" error - this can occur transiently after detachment
 		// The block storage still exists, just retry after a short delay
 		if isNothingToChangeError(err) {
-			log.Printf("[WARN] Received 'Nothing to change' error when reading block storage %s, retrying after brief delay", d.Id())
+			log.Printf("[WARN] Received 'Nothing to change' error when reading block storage %s (error: %s), retrying after brief delay", d.Id(), errStr)
 			time.Sleep(2 * time.Second)
 			bs, _, err = client.BlockStorage.Get(ctx, d.Id())
 			if err != nil {
@@ -188,7 +201,7 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 				}
 				// For "Nothing to change" on retry, treat as non-fatal and use current state
 				if isNothingToChangeError(err) {
-					log.Printf("[WARN] Block storage %s still returning 'Nothing to change' after retry, assuming state is correct", d.Id())
+					log.Printf("[WARN] Block storage %s still returning 'Nothing to change' after retry (error: %s), assuming state is correct", d.Id(), errStr)
 					// Don't update state, just return - the state is already correct
 					// This can happen when the API is in a transitional state after detachment
 					return nil
@@ -200,6 +213,13 @@ func resourceVultrBlockStorageRead(ctx context.Context, d *schema.ResourceData, 
 			d.SetId("")
 			return nil
 		} else {
+			// Log the actual error for debugging - this helps identify if the error format changed
+			log.Printf("[DEBUG] Block storage read error (not caught by 'Nothing to change' check): %s", errStr)
+			// Double-check if it might be a "Nothing to change" error we missed
+			if strings.Contains(errStr, "Nothing") && strings.Contains(errStr, "change") {
+				log.Printf("[WARN] Error appears to be 'Nothing to change' but wasn't caught, treating as non-fatal")
+				return nil
+			}
 			return diag.Errorf("error getting block storage: %v", err)
 		}
 	}
