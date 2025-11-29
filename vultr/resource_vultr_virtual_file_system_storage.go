@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/vultr/govultr/v3"
 )
 
@@ -23,6 +24,11 @@ func resourceVultrVirtualFileSystemStorage() *schema.Resource {
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(30 * time.Minute),
+			Update: schema.DefaultTimeout(30 * time.Minute),
+			Delete: schema.DefaultTimeout(10 * time.Minute),
+		},
 
 		Schema: map[string]*schema.Schema{
 			"region": {
@@ -32,8 +38,10 @@ func resourceVultrVirtualFileSystemStorage() *schema.Resource {
 				DiffSuppressFunc: IgnoreCase,
 			},
 			"size_gb": {
-				Type:     schema.TypeInt,
-				Required: true,
+				Type:         schema.TypeInt,
+				Required:     true,
+				ValidateFunc: validation.IntAtLeast(10),
+				Description:  "The size of the virtual file system storage in GB. Minimum size is 10 GB.",
 			},
 			"label": {
 				Type:     schema.TypeString,
@@ -52,9 +60,11 @@ func resourceVultrVirtualFileSystemStorage() *schema.Resource {
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			"disk_type": {
-				Type:     schema.TypeString,
-				Optional: true,
-				Default:  "nvme",
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "nvme",
+				ValidateFunc: validation.StringInSlice([]string{"nvme", "ssd"}, false),
+				Description:  "The underlying disk type. Options are `nvme` (default) or `ssd`.",
 			},
 			// computed fields
 			"status": {
@@ -130,14 +140,21 @@ func resourceVultrVirtualFileSystemStorageCreate(ctx context.Context, d *schema.
 	if attached, ok := d.GetOk("attached_instances"); ok {
 		ids := attached.(*schema.Set).List()
 		for i := range ids {
-			log.Printf("[INFO] Attaching virtual file system storage %s to instance %s", d.Id(), ids[i].(string))
-			if _, _, err := client.VirtualFileSystemStorage.Attach(ctx, d.Id(), ids[i].(string)); err != nil {
+			instanceID := ids[i].(string)
+			log.Printf("[INFO] Attaching virtual file system storage %s to instance %s", d.Id(), instanceID)
+			attachment, _, err := client.VirtualFileSystemStorage.Attach(ctx, d.Id(), instanceID)
+			if err != nil {
 				return diag.Errorf(
-					"error attaching virtual file system storage %s to instance %s : %v",
+					"error attaching virtual file system storage %s to instance %s: %v",
 					d.Id(),
-					ids[i].(string),
+					instanceID,
 					err,
 				)
+			}
+
+			// Log attachment details if available
+			if attachment != nil {
+				log.Printf("[INFO] VFS attachment created: state=%s, mount_tag=%d", attachment.State, attachment.MountTag)
 			}
 		}
 	}
@@ -238,7 +255,7 @@ func resourceVultrVirtualFileSystemStorageUpdate(ctx context.Context, d *schema.
 		elemsOld := attOld.(*schema.Set).List()
 		elemsNew := attNew.(*schema.Set).List()
 
-		var idOld, idNew, idDetach, idAttach []string
+		var idOld, idNew []string
 		for i := range elemsOld {
 			idOld = append(idOld, elemsOld[i].(string))
 		}
@@ -247,20 +264,33 @@ func resourceVultrVirtualFileSystemStorageUpdate(ctx context.Context, d *schema.
 			idNew = append(idNew, elemsNew[i].(string))
 		}
 
-		idDetach = append(idDetach, diffSlice(idNew, idOld)...)
-		idAttach = append(idAttach, diffSlice(idOld, idNew)...)
+		// Find instances to detach: in old but not in new
+		idDetach := diffSlice(idNew, idOld)
+		// Find instances to attach: in new but not in old
+		idAttach := diffSlice(idOld, idNew)
 
+		// Detach instances that are no longer in the list
 		for i := range idDetach {
 			log.Printf(`[INFO] Detaching virtual file system storage %s from instance %s`, d.Id(), idDetach[i])
 			if err := client.VirtualFileSystemStorage.Detach(ctx, d.Id(), idDetach[i]); err != nil {
-				return diag.Errorf("error detaching instance %s from virtual file system storage %s", idDetach[i], d.Id())
+				return diag.Errorf("error detaching instance %s from virtual file system storage %s: %v", idDetach[i], d.Id(), err)
 			}
 		}
 
+		// Attach new instances
 		for i := range idAttach {
 			log.Printf(`[INFO] Attaching virtual file system storage %s to instance %s`, d.Id(), idAttach[i])
-			if _, _, err := client.VirtualFileSystemStorage.Attach(ctx, d.Id(), idAttach[i]); err != nil {
-				return diag.Errorf("error attaching instance %s to virtual file system storage %s", idAttach[i], d.Id())
+			attachment, _, err := client.VirtualFileSystemStorage.Attach(ctx, d.Id(), idAttach[i])
+			if err != nil {
+				return diag.Errorf("error attaching instance %s to virtual file system storage %s: %v", idAttach[i], d.Id(), err)
+			}
+
+			// Wait for attachment to be in ATTACHED state
+			if attachment != nil && attachment.State != "ATTACHED" {
+				log.Printf("[INFO] Waiting for VFS attachment to instance %s to be in ATTACHED state", idAttach[i])
+				if err := waitForVFSAttachment(ctx, client, d.Id(), idAttach[i], 30*time.Second); err != nil {
+					return diag.Errorf("error waiting for VFS attachment: %v", err)
+				}
 			}
 		}
 	}
@@ -348,4 +378,32 @@ func newVirtualFileSystemStorageStateRefresh(ctx context.Context, d *schema.Reso
 			return nil, "", nil
 		}
 	}
+}
+
+// waitForVFSAttachment waits for a VFS attachment to be in ATTACHED state
+func waitForVFSAttachment(ctx context.Context, client *govultr.Client, vfsID, instanceID string, timeout time.Duration) error {
+	log.Printf("[INFO] Waiting for VFS %s attachment to instance %s to be in ATTACHED state", vfsID, instanceID)
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			attachment, _, err := client.VirtualFileSystemStorage.AttachmentGet(ctx, vfsID, instanceID)
+			if err != nil {
+				// Attachment might not exist yet, continue waiting
+				continue
+			}
+			if attachment != nil && attachment.State == "ATTACHED" {
+				log.Printf("[INFO] VFS attachment successfully attached with mount_tag: %d", attachment.MountTag)
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("VFS attachment did not reach ATTACHED state within %v", timeout)
 }

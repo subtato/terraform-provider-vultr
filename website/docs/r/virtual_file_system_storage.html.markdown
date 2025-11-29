@@ -23,6 +23,25 @@ resource "vultr_virtual_file_system_storage" "my_vfs_storage" {
 }
 ```
 
+Create a virtual file system storage with attached instances:
+
+```hcl
+resource "vultr_instance" "my_instance" {
+  plan   = "vc2-1c-1gb"
+  region = "ewr"
+  os_id  = 387
+}
+
+resource "vultr_virtual_file_system_storage" "my_vfs_storage" {
+  label             = "vultr-vfs-storage"
+  size_gb           = 100
+  region            = "ewr"
+  disk_type         = "nvme"
+  attached_instances = [vultr_instance.my_instance.id]
+  tags              = ["production", "shared-storage"]
+}
+```
+
 ## Argument Reference
 
 ~> Updating `tags` will cause a `force new`.
@@ -41,7 +60,10 @@ The following arguments are supported:
 The following attributes are exported:
 
 * `attached_instances` - A list of instance IDs currently attached to the virtual file system storage.
-* `attachments` - A list of attchment states for instances currently attached to the virtual file system storage.
+* `attachments` - A list of attachment states for instances currently attached to the virtual file system storage. Each attachment contains:
+  * `instance_id` - The ID of the attached instance.
+  * `state` - The current state of the attachment (e.g., "ATTACHED").
+  * `mount` - The mount tag number for this attachment.
 * `charges` - The current pending charges for the virtual file system storage subscription in USD.
 * `cost` - The cost per month of the virtual file system storage subscription in USD.
 * `date_created` - The date the virtual file system storage subscription was added to your Vultr account.
@@ -51,6 +73,14 @@ The following attributes are exported:
 * `status` - The status of the virtual file system storage subscription.
 * `size_gb` - The size of the virtual file system storage subscription in GB.
 * `tags` - A list of tags used on the virtual file system storage subscription.
+
+## Timeouts
+
+The `timeouts` block allows you to specify timeouts for certain operations:
+
+* `create` - (Defaults to 30 minutes) Used when creating the virtual file system storage and attaching instances
+* `update` - (Defaults to 30 minutes) Used when updating the virtual file system storage or changing attachments
+* `delete` - (Defaults to 10 minutes) Used when destroying the virtual file system storage
 
 ## Import
 

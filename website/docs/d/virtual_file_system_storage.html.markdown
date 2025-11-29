@@ -39,7 +39,10 @@ The `filter` block supports the following:
 The following attributes are exported:
 
 * `attached_instances` - A list of instance IDs currently attached to the virtual file system storage.
-* `attachments` - A list of attchment states for instances currently attached to the virtual file system storage.
+* `attachments` - A list of attachment states for instances currently attached to the virtual file system storage. Each attachment contains:
+  * `instance_id` - The ID of the attached instance.
+  * `state` - The current state of the attachment (e.g., "ATTACHED").
+  * `mount` - The mount tag number for this attachment.
 * `charges` - The current pending charges for the virtual file system storage subscription in USD.
 * `cost` - The cost per month of the virtual file system storage subscription in USD.
 * `date_created` - The date the virtual file system storage subscription was added to your Vultr account.
